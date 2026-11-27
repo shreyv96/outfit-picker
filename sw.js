@@ -1,9 +1,9 @@
 // Keeps the app working offline. Bump VERSION whenever app files change.
-const VERSION = 'v1';
+const VERSION = 'v2';
 const CACHE = `outfit-picker-${VERSION}`;
 const SHELL = [
   './', 'index.html', 'styles.css', 'manifest.webmanifest',
-  'js/app.js', 'js/db.js', 'js/weather.js', 'js/outfit.js', 'js/sample.js',
+  'js/app.js', 'js/db.js', 'js/weather.js', 'js/outfit.js', 'js/sample.js', 'js/stylist.js', 'vendor/anthropic-sdk.js',
   'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png',
 ];
 

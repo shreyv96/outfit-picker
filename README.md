@@ -20,6 +20,15 @@ Your wardrobe is stored only on your phone. Use **Settings → Save backup** now
 
 Weather comes from [Open-Meteo](https://open-meteo.com/) (free, no key).
 
+## AI stylist
+
+On the Today tab, **Ask the stylist** sends the top five outfits from the rules above, the wardrobe list and the photos of those pieces to Claude (`claude-opus-5-5`). Claude judges them for Stockholm style and the weather, picks one (and may swap in other pieces you own), and gives a score out of 10, a short verdict and styling tips. The answer is kept until you shuffle, change the occasion or day, so reopening the app doesn't ask again.
+
+- It needs your own Anthropic API key: create one at https://console.anthropic.com/settings/keys and paste it into **Settings → AI stylist**. The key is stored only on your phone.
+- Each ask costs roughly a few US cents. Set a monthly spend limit in the console.
+- If Claude declines a request, the API retries it on a fallback model (`fallbacks: "default"`).
+- The SDK is vendored in `vendor/anthropic-sdk.js` (`@anthropic-ai/sdk` 1.8.0 bundled with esbuild) so the app still has no build step.
+
 ## Code
 
 Plain HTML, CSS and JavaScript with no build step, so GitHub Pages can host it as-is.
@@ -27,6 +36,7 @@ Plain HTML, CSS and JavaScript with no build step, so GitHub Pages can host it a
 - `js/outfit.js`: categories, colours and the outfit engine
 - `js/weather.js`: forecast and the daily summary
 - `js/db.js`: on-device storage (IndexedDB)
+- `js/stylist.js`: the Claude stylist (prompt, JSON schema, request)
 - `js/app.js`: screens
 - `sw.js`: offline support. Bump `VERSION` when files change.
 
