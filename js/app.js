@@ -5,6 +5,7 @@ import {
   nearestColour, suggestOutfits, tipsFor, slotLabel,
 } from './outfit.js';
 import { SAMPLE_ITEMS } from './sample.js';
+import { askStylist, getApiKey, setApiKey } from './stylist.js';
 
 // ---------- State ----------
 const store = {
@@ -23,6 +24,7 @@ const state = {
   weatherError: null,
   loc: store.get('loc', STOCKHOLM),
   editing: null,
+  stylist: store.get('stylist', null), // { key, status, result, error }
 };
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -108,7 +110,11 @@ async function renderToday() {
   const desc = describeCode(w.code);
   const result = suggestOutfits(state.items, w, { occasion: state.occasion, seed: String(state.shuffle) });
   const tips = tipsFor(w, result.needs);
-  const outfit = result.outfits.length ? result.outfits[state.shuffle % result.outfits.length] : null;
+  const engineOutfit = result.outfits.length ? result.outfits[state.shuffle % result.outfits.length] : null;
+  const sKey = stylistKey(w);
+  const st = state.stylist && state.stylist.key === sKey ? state.stylist : null;
+  const styled = st && st.status === 'done' ? reviveStylist(st.result) : null;
+  const outfit = styled ? styled.outfit : engineOutfit;
 
   const dayTabs = [0, 1].map((d) => `<button class="seg ${state.dayOffset === d ? 'on' : ''}" data-day="${d}">${d === 0 ? 'Today' : 'Tomorrow'}</button>`).join('');
   const occ = OCCASIONS.map((o) => `<button class="chip ${state.occasion === o.id ? 'on' : ''}" data-occ="${o.id}">${o.label}</button>`).join('');
@@ -127,8 +133,10 @@ async function renderToday() {
     const pieces = order.filter((k) => outfit[k]).map((k) => outfit[k]).concat(outfit.acc);
     outfitHtml = `<div class="card outfit">
       <div class="outfit-grid">${pieces.map((p) => `<button class="piece" data-edit="${p.id}">${thumb(p)}<div class="piece-label"><span class="cat">${esc(labelForSlot(p))}</span><span class="name">${esc(p.name)}</span></div></button>`).join('')}</div>
+      ${styled ? `<div class="badge">✦ Stylist's pick</div>` : ''}
       <div class="row actions"><button class="btn" id="shuffle">↻ Shuffle</button><button class="btn primary" id="wear">✓ I'm wearing this</button></div>
-    </div>`;
+    </div>
+    ${stylistCard(st, styled)}`;
   }
 
   const missingHtml = state.items.length && result.missing.length
@@ -164,9 +172,70 @@ async function renderToday() {
   const sample = $('#sample');
   if (sample) sample.onclick = loadSample;
   const sh = $('#shuffle');
-  if (sh) sh.onclick = () => { state.shuffle++; renderToday(); };
+  if (sh) sh.onclick = () => { state.shuffle++; if (state.stylist && state.stylist.status !== 'loading') setStylist(null); renderToday(); };
   const wear = $('#wear');
   if (wear) wear.onclick = () => wearOutfit(outfit, w.date);
+  const ask = $('#askStylist');
+  if (ask) ask.onclick = () => runStylist(w, result, sKey);
+  const undo = $('#undoStylist');
+  if (undo) undo.onclick = () => { setStylist(null); renderToday(); };
+}
+
+// ---------- AI stylist ----------
+function stylistKey(w) {
+  return `${w.date}|${state.occasion}|${state.shuffle}|${state.items.length}`;
+}
+
+function setStylist(v) {
+  state.stylist = v;
+  // Keep finished answers so reopening the app doesn't ask (and pay) again.
+  store.set('stylist', v && v.status === 'done' ? v : null);
+}
+
+// Stored answers hold item ids; swap them back for the current items.
+function reviveStylist(r) {
+  const find = (id) => state.items.find((i) => i.id === id) || null;
+  const outfit = { acc: (r.outfit.acc || []).map(find).filter(Boolean) };
+  for (const s of ['outer', 'mid', 'top', 'bottom', 'shoes']) outfit[s] = r.outfit[s] ? find(r.outfit[s]) : null;
+  if (!outfit.top || !outfit.bottom) return null;
+  return { ...r, outfit };
+}
+
+function stylistCard(st, styled) {
+  if (st && st.status === 'loading') {
+    return `<section class="card stylist loading-card"><div class="spinner"></div><p>Your stylist is looking through your wardrobe…</p></section>`;
+  }
+  if (styled) {
+    return `<section class="card stylist">
+      <div class="st-head"><div class="st-score"><b>${styled.score}</b><small>/10</small></div><div><h3>${esc(styled.headline)}</h3><p class="muted small">Stylist's verdict</p></div></div>
+      <p>${esc(styled.why)}</p>
+      ${styled.tips.length ? `<ul>${styled.tips.map((t) => `<li>${esc(t)}</li>`).join('')}</ul>` : ''}
+      <button class="link" id="undoStylist">Show the original suggestion</button>
+    </section>`;
+  }
+  const err = st && st.status === 'error' ? `<p class="error small">${esc(st.error)}</p>` : '';
+  const hasKey = !!getApiKey();
+  return `<section class="card stylist ask">
+    ${err}
+    <button class="btn accent" id="askStylist">✦ ${hasKey ? 'Ask the stylist' : 'Set up the AI stylist'}</button>
+    <p class="muted small">${hasKey ? 'Claude judges the options with your photos, picks the sharpest look for Stockholm today and explains why.' : 'Add your Anthropic API key in Settings to get an AI opinion on your outfit.'}</p>
+  </section>`;
+}
+
+async function runStylist(w, result, key) {
+  if (!getApiKey()) { openSettings('stylist'); return; }
+  setStylist({ key, status: 'loading' });
+  renderToday();
+  try {
+    const r = await askStylist({ items: state.items, outfits: result.outfits, weather: w, needs: result.needs, occasion: state.occasion });
+    const stored = { ...r, outfit: { acc: r.outfit.acc.map((a) => a.id) } };
+    for (const s of ['outer', 'mid', 'top', 'bottom', 'shoes']) stored.outfit[s] = r.outfit[s] ? r.outfit[s].id : null;
+    if (state.stylist && state.stylist.key === key) setStylist({ key, status: 'done', result: stored });
+  } catch (e) {
+    if (state.stylist && state.stylist.key === key) setStylist({ key, status: 'error', error: e.message || 'Something went wrong.' });
+    if (e.kind === 'nokey' || e.kind === 'auth') openSettings('stylist');
+  }
+  if (state.tab === 'today') renderToday();
 }
 
 function labelForSlot(p) {
@@ -386,13 +455,17 @@ async function processPhoto(file) {
 }
 
 // ---------- Settings ----------
-function openSettings() {
+function openSettings(focus) {
   const sheet = $('#sheet');
   const usingDevice = state.loc.name !== STOCKHOLM.name;
   const hasSamples = state.items.some((i) => i.sample);
   sheet.innerHTML = `
     <div class="sheet-inner">
       <div class="sheet-head"><h2>Settings</h2><button class="icon-btn" id="closeSheet" aria-label="Close">✕</button></div>
+      <h3 id="stylistSection">AI stylist</h3>
+      <p class="muted small">The stylist uses Claude by Anthropic. Paste an API key from <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a>. It is saved only on this phone. Each time you ask, the outfit photos and wardrobe list are sent to Anthropic, which costs a few US cents per ask. Setting a monthly spend limit in the console is a good idea.</p>
+      <div class="key-row"><input type="password" id="apiKey" placeholder="sk-ant-…" value="${esc(getApiKey())}" autocomplete="off" autocapitalize="off" spellcheck="false"><button class="btn" id="saveKey">Save</button></div>
+      ${getApiKey() ? `<button class="link left" id="removeKey">Remove key</button>` : ''}
       <h3>Weather location</h3>
       <div class="chips"><button class="chip ${!usingDevice ? 'on' : ''}" id="locSthlm">Stockholm</button><button class="chip ${usingDevice ? 'on' : ''}" id="locDevice">Use my location</button></div>
       <h3>Backup</h3>
@@ -400,10 +473,22 @@ function openSettings() {
       <div class="row"><button class="btn" id="exportBtn">Save backup</button><label class="btn">Restore backup<input type="file" accept="application/json,.json" id="importInput" hidden></label></div>
       ${hasSamples ? `<h3>Sample wardrobe</h3><div class="row"><button class="btn" id="clearSamples">Remove sample items</button></div>` : ''}
       <h3>About</h3>
-      <p class="muted small">${state.items.length} items. Weather by <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a>. Nothing leaves your device except the weather lookup for your location.</p>
+      <p class="muted small">${state.items.length} items. Weather by <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a>. Nothing leaves your device except the weather lookup and, when you ask the stylist, the outfit details and photos sent to Anthropic.</p>
     </div>`;
   sheet.showModal();
   $('#closeSheet').onclick = () => sheet.close();
+  $('#saveKey').onclick = () => {
+    const v = $('#apiKey').value.trim();
+    if (v && !v.startsWith('sk-ant-')) { toast('That does not look like an Anthropic API key.'); return; }
+    setApiKey(v);
+    if (state.stylist && state.stylist.status === 'error') setStylist(null);
+    sheet.close();
+    toast(v ? 'Key saved on this phone' : 'Key removed');
+    render();
+  };
+  const rk = $('#removeKey');
+  if (rk) rk.onclick = () => { setApiKey(''); sheet.close(); toast('Key removed'); render(); };
+  if (focus === 'stylist') setTimeout(() => { const k = $('#apiKey'); if (k && !k.value) k.focus(); }, 50);
   $('#locSthlm').onclick = () => setLocation(STOCKHOLM);
   $('#locDevice').onclick = async () => {
     try { setLocation(await getDeviceLocation()); }
